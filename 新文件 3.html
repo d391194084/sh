@@ -1,0 +1,753 @@
+<!DOCTYPE html>
+<html lang="zh-Hant">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Windows AD 密碼問題 - 證據收集工具</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <!-- Chosen Palette: Calm Neutral -->
+    <!-- Application Structure Plan: 本應用的架構設計為一個互動式診斷精靈。左側是一個固定的導覽欄，列出了報告中的六個主要證據收集部分以及一個「總覽」和「最終檢查清單」。右側是主要內容區域。使用者點擊導覽連結時，JavaScript 會顯示對應的步驟內容。之所以選擇這種結構，是因為原始報告是一個程序性文件。將其轉換為帶有導覽和可點擊核取方塊的介面，能將靜態文件轉變為一個主動的工具，讓 IT 管理員能更輕鬆地執行和追蹤診斷流程。首頁的「總覽」部分包含一個進度圖表，能即時反映已勾選的檢查項目，提供即時反饋和「完成」的動力。 -->
+    <!-- Visualization & Content Choices: 
+        - 報告資訊: 六個部分的診斷步驟、PowerShell 命令和記錄清單。
+        - 目標: 引導使用者完成收集過程並追蹤進度。
+        - 呈現方式:
+            1.  導覽 (HTML/Tailwind): 左側垂直導覽列。
+            2.  內容區塊 (HTML/JS): 根據導覽點擊顯示/隱藏對應的 <section>。
+            3.  PowerShell 命令 (HTML/JS): 使用 <pre><code> 標籤顯示，並附帶一個「複製」按鈕，透過 JS 實現複製到剪貼簿功能。
+            4.  記錄項目 (HTML/JS): 轉換為互動式 <input type="checkbox">。
+            5.  進度追蹤 (Chart.js): 在「總覽」頁面使用一個甜甜圈圖 (Doughnut Chart)，其數據 (已完成 vs. 待處理) 會在每次勾選核取方塊時透過 JavaScript 動態更新。
+        - 互動: 點擊導覽切換視圖；點擊按鈕複製命令；勾選核取方塊更新圖表。
+        - 理由: 這種設計將被動閱讀轉為主動執行。Chart.js 圖表提供了一個清晰的視覺化進度反饋，這在原始報告中是沒有的。
+    -->
+    <!-- CONFIRMATION: NO SVG graphics used. NO Mermaid JS used. -->
+    <style>
+        body {
+            font-family: 'Inter', 'Noto Sans TC', sans-serif;
+        }
+        .nav-link {
+            display: block;
+            padding: 0.75rem 1rem;
+            border-radius: 0.375rem;
+            transition: background-color 0.2s, color 0.2s;
+            font-weight: 500;
+        }
+        .nav-link:hover {
+            background-color: #f3f4f6;
+        }
+        .nav-link.active {
+            background-color: #3b82f6;
+            color: white;
+        }
+        .copy-btn {
+            position: absolute;
+            top: 0.5rem;
+            right: 0.5rem;
+            background-color: #4b5563;
+            color: white;
+            padding: 0.25rem 0.5rem;
+            border-radius: 0.25rem;
+            font-size: 0.75rem;
+            opacity: 0;
+            transition: opacity 0.2s;
+        }
+        pre:hover .copy-btn {
+            opacity: 1;
+        }
+        pre {
+            position: relative;
+            background-color: #1f2937;
+            color: #d1d5db;
+            padding: 1rem;
+            padding-top: 2rem;
+            border-radius: 0.375rem;
+            overflow-x: auto;
+        }
+        code {
+            font-family: 'Consolas', 'Monaco', monospace;
+        }
+        .chart-container {
+            position: relative;
+            width: 100%;
+            max-width: 400px;
+            margin-left: auto;
+            margin-right: auto;
+            height: 300px;
+            max-height: 400px;
+        }
+        @media (min-width: 768px) {
+            .chart-container {
+                height: 350px;
+            }
+        }
+        .gemini-btn {
+            background-color: #4f46e5;
+            color: white;
+            padding: 0.5rem 1rem;
+            border-radius: 0.375rem;
+            font-weight: 500;
+            transition: background-color 0.2s;
+            display: inline-flex;
+            align-items: center;
+            margin-top: 0.75rem;
+        }
+        .gemini-btn:hover {
+            background-color: #4338ca;
+        }
+        .gemini-btn:disabled {
+            background-color: #a5b4fc;
+            cursor: not-allowed;
+        }
+        /* Modal Styles */
+        .modal-backdrop {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background-color: rgba(0, 0, 0, 0.5);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 50;
+        }
+        .modal-content {
+            background-color: white;
+            padding: 1.5rem;
+            border-radius: 0.5rem;
+            max-width: 90%;
+            width: 600px;
+            max-height: 80vh;
+            overflow-y: auto;
+            position: relative;
+        }
+        .modal-close-btn {
+            position: absolute;
+            top: 0.5rem;
+            right: 0.5rem;
+            background-color: #e5e7eb;
+            color: #4b5563;
+            border-radius: 9999px;
+            width: 1.75rem;
+            height: 1.75rem;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-weight: bold;
+            cursor: pointer;
+        }
+        /* Spinner */
+        .spinner {
+            border: 4px solid #f3f4f6;
+            border-top: 4px solid #3b82f6;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+            margin: 0 auto;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body class="bg-gray-50 text-gray-800 flex flex-col md:flex-row h-screen overflow-hidden">
+
+    <nav class="w-full md:w-72 bg-white border-b md:border-b-0 md:border-r border-gray-200 p-4 overflow-y-auto flex-shrink-0">
+        <h1 class="text-xl font-bold text-blue-600 mb-4">AD 證據收集工具</h1>
+        <ul class="space-y-1">
+            <li><a href="#" class="nav-link active" data-section="overview">總覽</a></li>
+            <li><a href="#" class="nav-link" data-section="part1">第一部分：使用者帳號屬性</a></li>
+            <li><a href="#" class="nav-link" data-section="part2">第二部分：密碼策略</a></li>
+            <li><a href="#" class="nav-link" data-section="part3">第三部分：GUI 介面</a></li>
+            <li><a href="#" class="nav-link" data-section="part4">第四部分：系統層級</a></li>
+            <li><a href="#" class="nav-link" data-section="part5">第五部分：事件記錄</a></li>
+            <li><a href="#" class="nav-link" data-section="part6">第六部分：AD 複寫狀態</a></li>
+            <li><a href="#" class="nav-link" data-section="final">證據收集檢查清單</a></li>
+        </ul>
+    </nav>
+
+    <main class="flex-1 p-6 md:p-10 overflow-y-auto">
+
+        <section id="overview">
+            <h2 class="text-3xl font-bold mb-4">Windows AD 密碼到期問題 - 驗證流程</h2>
+            <p class="text-lg text-gray-600 mb-6">
+                歡迎使用此互動式證據收集工具。本工具將引導您完成針對使用者 R169867 的密碼問題進行手動驗證的每一步。請使用左側的導覽列切換至不同部分，並勾選您完成的項目。
+            </p>
+            <div class="bg-white p-6 rounded-lg shadow-sm border border-gray-200">
+                <h3 class="text-xl font-semibold mb-4 text-center">收集進度總覽</h3>
+                <div class="chart-container">
+                    <canvas id="progressChart"></canvas>
+                </div>
+                <p id="progressText" class="text-center text-lg font-medium mt-4 text-gray-700">總進度: 0 / 0 項</p>
+            </div>
+        </section>
+
+        <section id="part1" class="hidden">
+            <h2 class="text-2xl font-bold mb-6">第一部分：收集使用者帳號屬性證據</h2>
+            <div class="space-y-6">
+                
+                <div class="bg-white p-6 rounded-lg shadow-sm border border-gray-200">
+                    <h3 class="text-lg font-semibold mb-3">步驟 1：開啟 PowerShell (以管理員身分)</h3>
+                    <p>在 Domain Controller 上執行以下命令。</p>
+                </div>
+
+                <div class="bg-white p-6 rounded-lg shadow-sm border border-gray-200">
+                    <h3 class="text-lg font-semibold mb-3">步驟 2：收集 R169867 的完整屬性</h3>
+                    <pre><button class="copy-btn">複製</button><code># 取得使用者所有屬性並輸出到檔案
+Get-ADUser -Identity "R169867" -Properties * | Format-List > C:\Temp\R169867_Full_Properties.txt
+
+# 顯示關鍵密碼相關屬性在螢幕上
+Get-ADUser -Identity "R169867" -Properties pwdLastSet,PasswordExpired,PasswordNeverExpires,ChangePasswordAtLogon,Enabled,LockedOut,UserAccountControl,LastLogonDate,BadLogonCount,AccountExpirationDate,PasswordNotRequired | Format-List</code></pre>
+                    <h4 class="font-medium mt-4 mb-2">請記錄以下資訊：</h4>
+                    <div class="grid grid-cols-2 md:grid-cols-3 gap-2">
+                        <label class="flex items-center space-x-2"><input type="checkbox" class="form-checkbox"><span>pwdLastSet 的值</span></label>
+                        <label class="flex items-center space-x-2"><input type="checkbox" class="form-checkbox"><span>PasswordExpired</span></label>
+                        <label class="flex items-center space-x-2"><input type="checkbox" class="form-checkbox"><span>PasswordNeverExpires</span></label>
+                        <label class="flex items-center space-x-2"><input type="checkbox" class="form-checkbox"><span>ChangePasswordAtLogon</span></label>
+                        <label class="flex items-center space-x-2"><input type="checkbox" class="form-checkbox"><span>UserAccountControl</span></label>
+                        <label class="flex items-center space-x-2"><input type="checkbox" class="form-checkbox"><span>Enabled</span></label>
+                        <label class="flex items-center space-x-2"><input type="checkbox" class="form-checkbox"><span>LockedOut</span></label>
+                        <label class="flex items-center space-x-2"><input type="checkbox" class="form-checkbox"><span>LastLogonDate</span></label>
+                        <label class="flex items-center space-x-2"><input type="checkbox" class="form-checkbox"><span>BadLogonCount</span></label>
+                    </div>
+                    
+                    <div class="mt-6 border-t border-gray-200 pt-4">
+                        <h4 class="font-medium mb-2 text-indigo-700">✨ 智慧分析</h4>
+                        <p class="text-sm text-gray-600 mb-2">將上方命令的 PowerShell 完整輸出貼到下方，AI 將協助您分析關鍵屬性。</p>
+                        <textarea id="step2Input" class="w-full h-32 p-2 border border-gray-300 rounded-md" placeholder="在這裡貼上 Get-ADUser -Properties * 的完整輸出..."></textarea>
+                        <button class="gemini-btn" data-step="2">✨ 分析 PowerShell 輸出</button>
+                    </div>
+                </div>
+
+                <div class="bg-white p-6 rounded-lg shadow-sm border border-gray-200">
+                    <h3 class="text-lg font-semibold mb-3">步驟 4：檢查 UserAccountControl 旗標詳細分析</h3>
+                    <pre><button class="copy-btn">複製</button><code>$user = Get-ADUser -Identity "R169867" -Properties UserAccountControl
+$uac = $user.UserAccountControl
+
+Write-Host "UserAccountControl 值: $uac (0x$($uac.ToString('X')))"
+Write-Host "旗標分析："
+
+if ($uac -band 0x2) { Write-Host "  - ACCOUNTDISABLE (0x2): 帳號已停用" }
+if ($uac -band 0x10) { Write-Host "  - LOCKOUT (0x10): 帳號已鎖定" }
+if ($uac -band 0x20) { Write-Host "  - PASSWD_NOTREQD (0x20): 不需要密碼" }
+if ($uac -band 0x40) { Write-Host "  - PASSWD_CANT_CHANGE (0x40): 使用者不能變更密碼" }
+if ($uac -band 0x10000) { Write-Host "  - DONT_EXPIRE_PASSWD (0x10000): 密碼永不過期" }
+if ($uac -band 0x800000) { Write-Host "  - PASSWORD_EXPIRED (0x800000): 密碼已過期 ⚠️" }
+if ($uac -band 0x200) { Write-Host "  - NORMAL_ACCOUNT (0x200): 正常使用者帳號" }</code></pre>
+                    <h4 class="font-medium mt-4 mb-2">請記錄：</h4>
+                    <div class="space-y-2">
+                        <label class="flex items-center space-x-2"><input type="checkbox" class="form-checkbox"><span>是否有 PASSWORD_EXPIRED (0x800000) 旗標</span></label>
+                    </div>
+
+                    <div class="mt-6 border-t border-gray-200 pt-4">
+                        <h4 class="font-medium mb-2 text-indigo-700">✨ 智慧分析</h4>
+                        <p class="text-sm text-gray-600 mb-2">將上方命令的 PowerShell 輸出貼到下方，AI 將協助您判讀旗標。</p>
+                        <textarea id="step4Input" class="w-full h-32 p-2 border border-gray-300 rounded-md" placeholder="在這裡貼上 UserAccountControl 旗標分析的輸出..."></textarea>
+                        <button class="gemini-btn" data-step="4">✨ 分析旗標</button>
+                    </div>
+                </div>
+
+            </div>
+        </section>
+
+        <section id="part3" class="hidden">
+            <h2 class="text-2xl font-bold mb-6">第三部分：收集 GUI 介面證據</h2>
+            <div class="space-y-6">
+
+                <div class="bg-white p-6 rounded-lg shadow-sm border border-gray-200">
+                    <h3 class="text-lg font-semibold mb-3">步驟 7：使用 Active Directory 使用者和電腦 GUI</h3>
+                    <ol class="list-decimal list-inside space-y-1 mb-4">
+                        <li>開啟 <strong>Active Directory Users and Computers</strong></li>
+                        <li>找到使用者 <strong>R169867</strong></li>
+                        <li>右鍵 → 內容</li>
+                        <li>切換到「<strong>帳戶</strong>」標籤</li>
+                    </ol>
+                    <h4 class="font-medium mt-4 mb-2">請截圖並記錄：</h4>
+                    <div class="grid grid-cols-2 gap-2">
+                        <label class="flex items-center space-x-2"><input type="checkbox" class="form-checkbox"><span>「使用者必須在下次登入時變更密碼」是否勾選</span></label>
+                        <label class="flex items-center space-x-2"><input type="checkbox" class="form-checkbox"><span>「使用者不能變更密碼」是否勾選</span></label>
+                        <label class="flex items-center space-x-2"><input type="checkbox" class="form-checkbox"><span>「密碼永久有效」是否勾選</span></label>
+                        <label class="flex items-center space-x-2"><input type="checkbox" class="form-checkbox"><span>「帳戶已停用」是否勾選</span></label>
+                        <label class="flex items-center space-x-2"><input type="checkbox" class="form-checkbox"><span>帳戶到期日期設定</span></label>
+                    </div>
+                </div>
+
+                <div class="bg-white p-6 rounded-lg shadow-sm border border-gray-200">
+                    <h3 class="text-lg font-semibold mb-3">步驟 8：使用屬性編輯器檢查原始值</h3>
+                     <ol class="list-decimal list-inside space-y-1 mb-4">
+                        <li>在使用者內容中，切換到「<strong>屬性編輯器</strong>」標籤</li>
+                        <li>找到並記錄以下屬性的值：</li>
+                    </ol>
+                    <h4 class="font-medium mt-4 mb-2">請記錄原始數值：</h4>
+                    <div class="grid grid-cols-2 md:grid-cols-3 gap-2">
+                        <label class="flex items-center space-x-2"><input type="checkbox" class="form-checkbox"><span>pwdLastSet (數值)</span></label>
+                        <label class="flex items-center space-x-2"><input type="checkbox" class="form-checkbox"><span>userAccountControl (數值)</span></label>
+                        <label class="flex items-center space-x-2"><input type="checkbox" class="form-checkbox"><span>accountExpires</span></label>
+                        <label class="flex items-center space-x-2"><input type="checkbox" class="form-checkbox"><span>badPasswordTime</span></label>
+                        <label class="flex items-center space-x-2"><input type="checkbox" class="form-checkbox"><span>lastLogon</span></label>
+                        <label class="flex items-center space-x-2"><input type="checkbox" class="form-checkbox"><span>logonCount</span></label>
+                    </div>
+                </div>
+
+            </div>
+        </section>
+
+        <section id="part4" class="hidden">
+            <h2 class="text-2xl font-bold mb-6">第四部分：收集系統層級證據</h2>
+            <div class="space-y-6">
+
+                <div class="bg-white p-6 rounded-lg shadow-sm border border-gray-200">
+                    <h3 class="text-lg font-semibold mb-3">步驟 9：檢查 DC 時間同步</h3>
+                    <pre><button class="copy-btn">複製</button><code># 檢查時間設定
+w32tm /query /status
+
+# 檢查與 PDC 的時間差
+w32tm /stripchart /computer:PDC_SERVER_NAME /samples:5</code></pre>
+                    <h4 class="font-medium mt-4 mb-2">請記錄：</h4>
+                    <div class="space-y-2">
+                        <label class="flex items-center space-x-2"><input type="checkbox" class="form-checkbox"><span>Source (時間來源)</span></label>
+                        <label class="flex items-center space-x-2"><input type="checkbox" class="form-checkbox"><span>最後同步時間</span></label>
+                        <label class="flex items-center space-x-2"><input type="checkbox" class="form-checkbox"><span>時間偏差值</span></label>
+                    </div>
+                </div>
+
+                <div class="bg-white p-6 rounded-lg shadow-sm border border-gray-200">
+                    <h3 class="text-lg font-semibold mb-3">步驟 10：檢查相關 GPO</h3>
+                    <pre><button class="copy-btn">複製</button><code># 列出可能影響密碼的 GPO
+Get-GPO -All | Where-Object {$_.DisplayName -match "password|密碼|security|安全"} | Select-Object DisplayName,GpoStatus,ModificationTime
+
+# 產生 R169867 的 GPO 報告
+gpresult /user 807mndgovtw\R169867 /h C:\Temp\R169867_GPO_Report.html</code></pre>
+                    <h4 class="font-medium mt-4 mb-2">請記錄：</h4>
+                    <div class="space-y-2">
+                        <label class="flex items-center space-x-2"><input type="checkbox" class="form-checkbox"><span>記錄 GPO 顯示名稱</span></label>
+                        <label class="flex items-center space-x-2"><input type="checkbox" class="form-checkbox"><span>產生 GPO 報告</span></label>
+                    </div>
+                </div>
+
+            </div>
+        </section>
+
+        <section id="part5" class="hidden">
+            <h2 class="text-2xl font-bold mb-6">第五部分：收集事件記錄證據</h2>
+            <div class="space-y-6">
+
+                <div class="bg-white p-6 rounded-lg shadow-sm border border-gray-200">
+                    <h3 class="text-lg font-semibold mb-3">步驟 11：搜尋 R169867 相關的事件</h3>
+                    <pre><button class="copy-btn">複製</button><code># 搜尋最近 7 天的相關事件
+$startDate = (Get-Date).AddDays(-7)
+
+# 搜尋密碼變更相關事件
+Get-WinEvent -FilterHashtable @{LogName='Security'; StartTime=$startDate; ID=4723,4724,4738} | 
+    Where-Object {$_.Message -match "R169867"} | 
+    Select-Object TimeCreated,Id,Message | 
+    Export-Csv C:\Temp\R169867_Password_Events.csv
+
+# 搜尋登入失敗事件
+Get-WinEvent -FilterHashtable @{LogName='Security'; StartTime=$startDate; ID=4625,4776} | 
+    Where-Object {$_.Message -match "R169867"} | 
+    Select-Object TimeCreated,Id,Message | 
+    Export-Csv C:\Temp\R169867_Login_Events.csv</code></pre>
+                    <p class="mt-2">此步驟為產生報告，請確認檔案已產生。</p>
+                </div>
+
+                <div class="bg-white p-6 rounded-lg shadow-sm border border-gray-200">
+                    <h3 class="text-lg font-semibold mb-3">步驟 12：檢查 Directory Service 事件記錄</h3>
+                    <pre><button class="copy-btn">複製</button><code>Get-WinEvent -LogName "Directory Service" -MaxEvents 100 | 
+    Where-Object {$_.Message -match "R169867" -or $_.Message -match "password"} |
+    Format-List TimeCreated,Id,LevelDisplayName,Message</code></pre>
+                    <p class="mt-2">請檢查命令輸出的日誌。</p>
+                </div>
+
+            </div>
+        </section>
+
+        <section id="part6" class="hidden">
+            <h2 class="text-2xl font-bold mb-6">第六部分：AD 複寫狀態證據</h2>
+            <div class="space-y-6">
+
+                <div class="bg-white p-6 rounded-lg shadow-sm border border-gray-200">
+                    <h3 class="text-lg font-semibold mb-3">步驟 13：檢查 AD 複寫狀態</h3>
+                    <pre><button class="copy-btn">複製</button><code># 檢查複寫狀態
+repadmin /showrepl
+
+# 檢查物件的複寫中繼資料
+repadmin /showobjmeta * "CN=R169867,OU=Users,DC=807,DC=mnd,DC=gov,DC=tw"</code></pre>
+                    <h4 class="font-medium mt-4 mb-2">特別注意 pwdLastSet 屬性的：</h4>
+                    <div class="grid grid-cols-2 gap-2">
+                        <label class="flex items-center space-x-2"><input type="checkbox" class="form-checkbox"><span>Version (版本號)</span></label>
+                        <label class="flex items-center space-x-2"><input type="checkbox" class="form-checkbox"><span>Originating DSA (來源 DC)</span></label>
+                        <label class="flex items-center space-x-2"><input type="checkbox" class="form-checkbox"><span>Originating Time (原始時間)</span></label>
+                        <label class="flex items-center space-x-2"><input type="checkbox" class="form-checkbox"><span>Local USN (本地 USN)</span></label>
+                    </div>
+
+                    <div class="mt-6 border-t border-gray-200 pt-4">
+                        <h4 class="font-medium mb-2 text-indigo-700">✨ 智慧分析</h4>
+                        <p class="text-sm text-gray-600 mb-2">將 repadmin /showobjmeta 的輸出貼到下方，AI 將協助您分析複寫中繼資料。</p>
+                        <textarea id="step13Input" class="w-full h-32 p-2 border border-gray-300 rounded-md" placeholder="在這裡貼上 repadmin /showobjmeta * ... 的輸出..."></textarea>
+                        <button class="gemini-btn" data-step="13">✨ 分析複寫中繼資料</button>
+                    </div>
+                </div>
+
+            </div>
+        </section>
+
+        <section id="final" class="hidden">
+            <h2 class="text-2xl font-bold mb-6">證據收集檢查清單</h2>
+            <p class="text-lg text-gray-600 mb-6">
+                完成所有步驟後，請確認您已收集以下所有證據，並準備好提供給分析人員。
+            </p>
+            <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <div class="bg-white p-6 rounded-lg shadow-sm border border-gray-200">
+                    <h3 class="text-xl font-semibold mb-4">檔案證據</h3>
+                    <div class="space-y-2">
+                        <label class="flex items-center space-x-2"><input type="checkbox" class="form-checkbox"><span>C:\Temp\R169867_Full_Properties.txt</span></label>
+                        <label class="flex items-center space-x-2"><input type="checkbox" class="form-checkbox"><span>C:\Temp\R169867_GPO_Report.html</span></label>
+                        <label class="flex items-center space-x-2"><input type="checkbox" class="form-checkbox"><span>C:\Temp\R169867_Password_Events.csv</span></label>
+                        <label class="flex items-center space-x-2"><input type="checkbox" class="form-checkbox"><span>C:\Temp\R169867_Login_Events.csv</span></label>
+                    </div>
+                </div>
+                <div class="bg-white p-6 rounded-lg shadow-sm border border-gray-200">
+                    <h3 class="text-xl font-semibold mb-4">截圖證據</h3>
+                    <div class="space-y-2">
+                        <label class="flex items-center space-x-2"><input type="checkbox" class="form-checkbox"><span>AD使用者和電腦的帳戶標籤截圖</span></label>
+                        <label class="flex items-center space-x-2"><input type="checkbox" class="form-checkbox"><span>屬性編輯器的相關屬性截圖</span></label>
+                    </div>
+                </div>
+            </div>
+            <div class="bg-white p-6 rounded-lg shadow-sm border border-gray-200 mt-6">
+                <h3 class="text-xl font-semibold mb-4">關鍵數據記錄</h3>
+                <div class="space-y-2">
+                    <label class="flex items-center space-x-2"><input type="checkbox" class="form-checkbox"><span>pwdLastSet 原始值和轉換後的日期</span></label>
+                    <label class="flex items-center space-x-2"><input type="checkbox" class="form-checkbox"><span>UserAccountControl 值和旗標分析</span></label>
+                    <label class="flex items-center space-x-2"><input type="checkbox" class="form-checkbox"><span>計算的密碼到期日期 vs 實際系統行為</span></label>
+                    <label class="flex items-center space-x-2"><input type="checkbox" class="form-checkbox"><span>GPO 套用狀況</span></label>
+                    <label class="flex items-center space-x-2"><input type="checkbox" class="form-checkbox"><span>複寫中繼資料</span></label>
+                </div>
+            </div>
+             <div class="bg-yellow-50 border-l-4 border-yellow-400 p-4 mt-6 rounded">
+                <h4 class="font-bold">重點關注：</h4>
+                <ul class="list-disc list-outside ml-5 mt-2 text-yellow-800">
+                    <li>UserAccountControl 是否包含 0x800000 (PASSWORD_EXPIRED)</li>
+                    <li>pwdLastSet 的值是否為 0 或異常小的數值</li>
+                    <li>ChangePasswordAtLogon 是否為 True</li>
+                    <li>計算的到期日期與實際行為是否一致</li>
+                </ul>
+            </div>
+            
+            <div class="bg-white p-6 rounded-lg shadow-sm border border-gray-200 mt-6">
+                <h3 class="text-xl font-semibold mb-4 text-indigo-700">✨ 智慧診斷摘要</h3>
+                <p class="text-gray-600 mb-4">
+                    完成所有證據收集後，將您在上述步驟中的關鍵發現（例如：pwdLastSet 的值、UAC 旗標、密碼策略天數等）貼入下方。Gemini AI 將協助您總結問題根本原因，並提供建議的解決方案。
+                </p>
+                <textarea id="finalSummaryInput" class="w-full h-40 p-2 border border-gray-300 rounded-md" placeholder="請輸入您的關鍵發現摘要，例如：&#10;- pwdLastSet = 0&#10;- UserAccountControl 包含 PASSWORD_EXPIRED (0x800000)&#10;- 網域密碼策略 (MaxPasswordAge) = 90 天&#10;- 使用者聲稱無法登入..."></textarea>
+                <button class="gemini-btn" data-step="final">✨ 產生診斷報告與建議</button>
+            </div>
+        </section>
+
+    </main>
+
+    <!-- Modal Background -->
+    <div id="loadingModal" class="modal-backdrop hidden">
+        <div class="modal-content text-center">
+            <div class="spinner"></div>
+            <p class="mt-4 text-gray-700 font-medium">AI 分析中，請稍候...</p>
+        </div>
+    </div>
+
+    <div id="resultModal" class="modal-backdrop hidden">
+        <div class="modal-content">
+            <button id="closeModalBtn" class="modal-close-btn" aria-label="關閉視窗">&times;</button>
+            <h3 id="resultTitle" class="text-xl font-bold mb-4 text-indigo-700">分析結果</h3>
+            <div id="resultText" class="prose max-w-none text-gray-800 whitespace-pre-wrap"></div>
+        </div>
+    </div>
+
+
+    <script>
+        document.addEventListener('DOMContentLoaded', () => {
+            const navLinks = document.querySelectorAll('.nav-link');
+            const sections = document.querySelectorAll('main > section');
+            const copyButtons = document.querySelectorAll('.copy-btn');
+            const checkboxes = document.querySelectorAll('input[type="checkbox"]');
+            const geminiButtons = document.querySelectorAll('.gemini-btn');
+
+            // Modal elements
+            const loadingModal = document.getElementById('loadingModal');
+            const resultModal = document.getElementById('resultModal');
+            const closeModalBtn = document.getElementById('closeModalBtn');
+            const resultTitle = document.getElementById('resultTitle');
+            const resultText = document.getElementById('resultText');
+            
+            let progressChartInstance = null;
+            const totalItems = checkboxes.length;
+
+            function showSection(sectionId) {
+                sections.forEach(section => {
+                    section.classList.add('hidden');
+                });
+                const activeSection = document.getElementById(sectionId);
+                if (activeSection) {
+                    activeSection.classList.remove('hidden');
+                }
+                
+                navLinks.forEach(link => {
+                    link.classList.remove('active');
+                    if (link.dataset.section === sectionId) {
+                        link.classList.add('active');
+                    }
+                });
+            }
+
+            navLinks.forEach(link => {
+                link.addEventListener('click', (e) => {
+                    e.preventDefault();
+                    const sectionId = e.target.dataset.section;
+                    showSection(sectionId);
+                });
+            });
+
+            copyButtons.forEach(button => {
+                button.addEventListener('click', () => {
+                    const pre = button.closest('pre');
+                    const code = pre.querySelector('code');
+                    const textToCopy = code.innerText;
+
+                    const tempTextarea = document.createElement('textarea');
+                    tempTextarea.value = textToCopy;
+                    document.body.appendChild(tempTextarea);
+                    tempTextarea.select();
+                    try {
+                        document.execCommand('copy');
+                        button.innerText = '已複製!';
+                        setTimeout(() => {
+                            button.innerText = '複製';
+                        }, 2000);
+                    } catch (err) {
+                        console.error('無法複製文字: ', err);
+                        button.innerText = '失敗';
+                    }
+                    document.body.removeChild(tempTextarea);
+                });
+            });
+
+            function updateProgressChart() {
+                const completedItems = document.querySelectorAll('input[type="checkbox"]:checked').length;
+                const pendingItems = totalItems - completedItems;
+
+                if (progressChartInstance) {
+                    progressChartInstance.data.datasets[0].data = [completedItems, pendingItems];
+                    progressChartInstance.update();
+                }
+                
+                const progressText = document.getElementById('progressText');
+                if (progressText) {
+                    progressText.innerText = `總進度: ${completedItems} / ${totalItems} 項`;
+                }
+            }
+
+            function initProgressChart() {
+                const ctx = document.getElementById('progressChart');
+                if (!ctx) return;
+                
+                progressChartInstance = new Chart(ctx.getContext('2d'), {
+                    type: 'doughnut',
+                    data: {
+                        labels: ['已完成', '待處理'],
+                        datasets: [{
+                            data: [0, totalItems],
+                            backgroundColor: [
+                                '#10b981',
+                                '#e5e7eb'
+                            ],
+                            borderColor: [
+                                '#ffffff',
+                                '#ffffff'
+                            ],
+                            borderWidth: 2
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        cutout: '70%',
+                        plugins: {
+                            legend: {
+                                position: 'bottom',
+                            },
+                            tooltip: {
+                                callbacks: {
+                                    label: function(context) {
+                                        let label = context.label || '';
+                                        if (label) {
+                                            label += ': ';
+                                        }
+                                        if (context.parsed !== null) {
+                                            label += context.parsed + ' 項';
+                                        }
+                                        return label;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                });
+            }
+            
+            // --- Gemini API Functions ---
+
+            const apiKey = ""; // API Key is managed by the environment
+            const apiUrl = `https://generativellanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-09-2025:generateContent?key=${apiKey}`;
+
+            function showLoadingModal() {
+                loadingModal.classList.remove('hidden');
+            }
+
+            function hideLoadingModal() {
+                loadingModal.classList.add('hidden');
+            }
+
+            function showResultModal(title, content) {
+                resultTitle.innerText = title;
+                resultText.innerHTML = content; // Using innerHTML to render markdown-like lists if AI provides them
+                resultModal.classList.remove('hidden');
+            }
+
+            function hideResultModal() {
+                resultModal.classList.add('hidden');
+            }
+
+            closeModalBtn.addEventListener('click', hideResultModal);
+            resultModal.addEventListener('click', (e) => {
+                if (e.target === resultModal) {
+                    hideResultModal();
+                }
+            });
+
+            async function callGeminiAPI(prompt, systemInstruction, retries = 3, delay = 1000) {
+                const payload = {
+                    contents: [{ parts: [{ text: prompt }] }],
+                    systemInstruction: {
+                        parts: [{ text: systemInstruction }]
+                    },
+                };
+
+                try {
+                    const response = await fetch(apiUrl, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(payload)
+                    });
+
+                    if (!response.ok) {
+                        if ((response.status === 429 || response.status >= 500) && retries > 0) {
+                            await new Promise(res => setTimeout(res, delay));
+                            return callGeminiAPI(prompt, systemInstruction, retries - 1, delay * 2);
+                        }
+                        const errorBody = await response.text();
+                        throw new Error(`API Error: ${response.status} ${response.statusText}. Body: ${errorBody}`);
+                    }
+
+                    const result = await response.json();
+                    const candidate = result.candidates?.[0];
+
+                    if (candidate && candidate.content?.parts?.[0]?.text) {
+                        return candidate.content.parts[0].text;
+                    } else {
+                        throw new Error("無效的 API 回應結構");
+                    }
+                } catch (error) {
+                    console.error("Gemini API 呼叫失敗:", error);
+                    return `分析失敗：${error.message}。請檢查您的網路連線或 API 設定。`;
+                }
+            }
+
+            geminiButtons.forEach(button => {
+                button.addEventListener('click', async (e) => {
+                    e.preventDefault();
+                    const step = e.target.dataset.step;
+                    let inputText = '';
+                    let userPrompt = '';
+                    let systemPrompt = "您是一位精通 Active Directory 的資深 IT 專家。您的任務是分析 PowerShell 輸出，並以清晰、簡潔的條列式格式，找出與使用者密碼問題最相關的關鍵資訊。";
+                    let modalTitle = "✨ 分析結果";
+
+                    switch (step) {
+                        case '2':
+                            inputText = document.getElementById('step2Input').value;
+                            if (!inputText) {
+                                showResultModal("錯誤", "請貼上 PowerShell 輸出內容。");
+                                return;
+                            }
+                            modalTitle = "步驟 2 分析：完整屬性";
+                            userPrompt = `請分析以下 Get-ADUser -Properties * 的輸出。請專注於 'pwdLastSet', 'PasswordExpired', 'PasswordNeverExpires', 'ChangePasswordAtLogon', 'Enabled', 'LockedOut', 和 'UserAccountControl' 這些屬性。請將 'pwdLastSet' 的值轉換為可讀日期（如果>0），並檢查 'UserAccountControl' 中是否包含 'DONT_EXPIRE_PASSWD' (0x10000) 或 'PASSWORD_EXPIRED' (0x800000) 旗標。\n\n輸出內容：\n${inputText}`;
+                            break;
+
+                        case '4':
+                            inputText = document.getElementById('step4Input').value;
+                            if (!inputText) {
+                                showResultModal("錯誤", "請貼上 PowerShell 輸出內容。");
+                                return;
+                            }
+                            modalTitle = "步驟 4 分析：UAC 旗標";
+                            userPrompt = `請分析以下 UserAccountControl 旗標的詳細分析輸出。請總結最重要的發現，特別是 'ACCOUNTDISABLE', 'LOCKOUT', 'DONT_EXPIRE_PASSWD', 和 'PASSWORD_EXPIRED' 這幾個旗標是否存在。\n\n輸出內容：\n${inputText}`;
+                            break;
+
+                        case '13':
+                            inputText = document.getElementById('step13Input').value;
+                            if (!inputText) {
+                                showResultModal("錯誤", "請貼上 PowerShell 輸出內容。");
+                                return;
+                            }
+                            modalTitle = "步驟 13 分析：複寫中繼資料";
+                            userPrompt = `請分析以下 repadmin /showobjmeta 的輸出。請專注於 'pwdLastSet' 屬性的複寫中繼資料。找出 'Originating DSA' (來源 DC), 'Originating Time' (原始時間) 和 'Version' (版本號)，並說明這對判斷密碼問題的來源有何意義。\n\n輸出內容：\n${inputText}`;
+                            break;
+
+                        case 'final':
+                            inputText = document.getElementById('finalSummaryInput').value;
+                            if (!inputText) {
+                                showResultModal("錯誤", "請輸入您的關鍵發現摘要。");
+                                return;
+                            }
+                            modalTitle = "✨ 智慧診斷摘要與建議";
+                            systemPrompt = "您是一位頂尖的 Active Directory 診斷專家。您將收到一份 IT 管理員收集的關於單一使用者密碼問題的關鍵發現摘要。您的任務是：\n1. 根據這些發現，以條列式總結出最可能的問題根本原因。\n2. 提供一個清晰、分步驟的建議解決方案。\n3. 您的回應應專業、易於執行，並使用繁體中文。";
+                            userPrompt = `這是我針對使用者 R169867 的密碼問題收集到的關鍵發現：\n\n${inputText}\n\n請根據這些資訊，提供您的診斷總結和建議的解決步驟。`;
+                            break;
+                    }
+
+                    showLoadingModal();
+                    button.disabled = true;
+
+                    try {
+                        const result = await callGeminiAPI(userPrompt, systemPrompt);
+                        // Simple Markdown to HTML conversion for lists
+                        const formattedResult = result
+                            .replace(/- (.*)/g, '<li>$1</li>')
+                            .replace(/(\<li>.*<\/li>)/g, '<ul>$1</ul>')
+                            .replace(/<\/ul>\n<ul>/g, ''); // Fix multiple lists
+
+                        hideLoadingModal();
+                        showResultModal(modalTitle, formattedResult);
+                    } catch (error) {
+                        hideLoadingModal();
+                        showResultModal("分析失敗", error.message);
+                    } finally {
+                        button.disabled = false;
+                    }
+                });
+            });
+
+            // --- End Gemini API Functions ---
+
+            checkboxes.forEach(checkbox => {
+                checkbox.addEventListener('change', updateProgressChart);
+            });
+
+            initProgressChart();
+            updateProgressChart();
+            showSection('overview');
+        });
+    </script>
+</body>
+</html>
